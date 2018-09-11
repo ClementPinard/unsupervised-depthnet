@@ -6,7 +6,7 @@ Learning Structure From Motion *From Motion*
 
 [Clement Pinard](http://perso.ensta-paristech.fr/~pinard/), Laure Chevalley, [Antoine Manzanera](http://perso.ensta-paristech.fr/~manzaner/), [David Filliat](http://perso.ensta-paristech.fr/~filliat/eng/)
 
-[![youtube video](http://img.youtube.com/vi/nU-Gv_I7zhg/0.jpg)](http://www.youtube.com/watch?v=nU-Gv_I7zhg)
+[![youtube video](http://img.youtube.com/vi/ZDgWAWTwU7U/0.jpg)](https://www.youtube.com/watch?v=ZDgWAWTwU7U)
 
 In [GMDL](https://sites.google.com/site/deepgeometry2018/) Workshop @ [ECCV2018](https://eccv2018.org/).
 
