@@ -6,6 +6,8 @@ Learning Structure From Motion *From Motion*
 
 [Clement Pinard](http://perso.ensta-paristech.fr/~pinard/), Laure Chevalley, [Antoine Manzanera](http://perso.ensta-paristech.fr/~manzaner/), [David Filliat](http://perso.ensta-paristech.fr/~filliat/eng/)
 
+[![youtube video](http://img.youtube.com/vi/nU-Gv_I7zhg/0.jpg)](http://www.youtube.com/watch?v=nU-Gv_I7zhg)
+
 In [GMDL](https://sites.google.com/site/deepgeometry2018/) Workshop @ [ECCV2018](https://eccv2018.org/).
 
 See the [project webpage](http://perso.ensta-paristech.fr/~pinard/unsupervised-depthnet/) for more details. 
@@ -70,7 +72,11 @@ and visualize the training progress by opening [https://localhost:6006](https://
 
 ### Flexible shifts training
 
-As an experimental training, you can try flexible shifts. This will every N epochs (N is argument) recompute optimal shifts for a given sample. The goal is to avoid sequences with too much disparity (by reducing shift) or static scenes (by increasing shift). A proper dataset has yet to be constructed to check if this is a good idea or not. See the equivalent for SFMLeanrer [here](https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/train_flexible_shifts.py)
+As an experimental training, you can try flexible shifts. This will every N epochs (N is argument) recompute optimal shifts for a given sample. The goal is to avoid sequences with too much disparity (by reducing shift) or static scenes (by increasing shift). A proper dataset has yet to be constructed to check if this is a good idea or not. See the equivalent for SFMLearner [here](https://github.com/ClementPinard/SfmLearner-Pytorch/blob/master/train_flexible_shifts.py)
+
+```bash
+python3 train_flexible_shifts.py /path/to/the/formatted/data/ -b4 -s3.0 --ssim 0.1 --epoch-size 3000 --sequence-length 3 --log-output [--with-gt] [--supervise-pose] -D 30 -r5
+```
 
 ## Evaluation
 
