@@ -4,7 +4,7 @@ import numpy as np
 # import pandas as pd
 from collections import Counter
 from path import Path
-from scipy.misc import imread
+from imageio import imread
 from tqdm import tqdm
 
 

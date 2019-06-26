@@ -1,77 +1,65 @@
 import torch
 from torch.nn import functional as F
 from inverse_warp import inverse_warp
-import numpy as np
 import math
+# from ssim import SSIM
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
+# ssim_mapper = SSIM(window_size=3)
 
-def photometric_reconstruction_loss(imgs, tgt_indices, ref_indices, depth, pose, intrinsics, intrinsics_inv, rotation_mode='euler', ssim_weight=0):
+
+def photometric_reconstruction_loss(imgs, tgt_indices, ref_indices,
+                                    depth, pose, intrinsics,
+                                    rotation_mode='euler', ssim_weight=0,
+                                    upsample=False):
     assert(pose.size(1) == imgs.size(1))
     b, _, h, w = depth.size()
-    batch_range = torch.arange(b).long().to(device)
+    loss = torch.tensor(0, dtype=torch.float32, device=device)
+    if b == 0:
+        return loss, None, None
+    batch_range = torch.arange(b, dtype=torch.int64, device=device)
 
-    b, s, _, hi, wi = imgs.size()
-    downscale = hi/h
-    imgs_scaled = F.interpolate(imgs, (3, h, w), mode='trilinear', align_corners=False)
+    b, s, c, hi, wi = imgs.size()
 
-    intrinsics_scaled = torch.cat((intrinsics[:, 0:2]/downscale, intrinsics[:, 2:]), dim=1)
-    intrinsics_scaled_inv = torch.cat((intrinsics_inv[:, :, 0:2]*downscale, intrinsics_inv[:, :, 2:]), dim=2)
+    assert(hi >= h and wi >= w), "Depth size is greater than img size, which is probably not what you want"
+    if upsample:
+        imgs_scaled = imgs
+        intrinsics_scaled = intrinsics
+    else:
+        downscale = hi/h
+        imgs_scaled = F.interpolate(imgs, (c, h, w), mode='area')
+        intrinsics_scaled = torch.cat((intrinsics[:, 0:2]/downscale, intrinsics[:, 2:]), dim=1)
+
     tgt_img_scaled = imgs_scaled[batch_range, tgt_indices]
 
-    loss = 0
-    warped_results, diff = [], []
+    warped_results, diff, dssim, valid = [], [], [], []
 
     for i in range(s - 1):
         idx = ref_indices[:, i]
         current_pose = pose[batch_range, idx]
         ref_img = imgs[batch_range, idx]
-        ref_img_warped = inverse_warp(ref_img,
-                                      depth[:,0],
-                                      current_pose,
-                                      intrinsics_scaled,
-                                      intrinsics_scaled_inv,
-                                      rotation_mode)
+        ref_img_warped, valid_points = inverse_warp(ref_img,
+                                                    depth[:,0],
+                                                    current_pose,
+                                                    intrinsics_scaled,
+                                                    rotation_mode)
 
-        warped_results.append(ref_img_warped)
+        dssim_loss_map = (0.5*(1-ssim(tgt_img_scaled + 1, ref_img_warped + 1))).clamp(0,1) if ssim_weight > 0 else 0
 
-        out_of_bounds = (ref_img_warped == 0).prod(1, keepdim=True, dtype=torch.uint8)
+        diff_map = tgt_img_scaled - ref_img_warped
 
-        ssim_loss_map = (0.5*(1-ssim(tgt_img_scaled, ref_img_warped))).clamp(0,1) if ssim_weight > 0 else 0
+        loss_map = ssim_weight * dssim_loss_map + (1-ssim_weight) * diff_map.abs()
 
-        diff_map = (tgt_img_scaled - ref_img_warped).abs()
-        diff.append(diff_map * (1 - out_of_bounds.type_as(ref_img_warped)))
-
-        loss_map = ssim_weight * ssim_loss_map + (1-ssim_weight) * diff_map
-
-        valid_loss_values = loss_map.masked_select(~out_of_bounds)
+        valid_loss_values = loss_map.masked_select(valid_points.unsqueeze(1))
         if valid_loss_values.numel() > 0:
-            loss += valid_loss_values.abs().mean()
+            loss += valid_loss_values.mean()
 
-    return loss, diff, warped_results
-
-
-def smooth_loss(pred_disp):
-    def gradient(pred):
-        D_dy = pred[:, :, 1:] - pred[:, :, :-1]
-        D_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
-        return D_dx, D_dy
-
-    if type(pred_disp) not in [tuple, list]:
-        pred_disp = [pred_disp]
-
-    loss = 0
-    weight = 1.
-
-    for scaled_disp in pred_disp:
-
-        dx, dy = gradient(scaled_disp)
-        dx2, dxdy = gradient(dx)
-        dydx, dy2 = gradient(dy)
-        loss += (dx2.abs().mean() + dxdy.abs().mean() + dydx.abs().mean() + dy2.abs().mean()) * weight / scaled_disp.mean()
-        weight /= 4
-    return loss
+        warped_results.append(ref_img_warped[0])
+        dssim.append(dssim_loss_map[0])
+        diff.append(diff_map[0])
+        valid.append(valid_points[0])
+    return loss, warped_results, diff, dssim, valid
 
 
 grad_kernel = torch.FloatTensor([[ 1, 2, 1],
@@ -88,40 +76,40 @@ def create_gaussian_window(window_size, channel):
         gauss = torch.Tensor([math.exp(-(x - window_size//2)**2/float(2*sigma**2)) for x in range(window_size)])
         return gauss/gauss.sum()
     _1D_window = _gaussian(window_size, 1.5).unsqueeze(1)
-    _2D_window = _1D_window@(_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
+    _2D_window = _1D_window @ (_1D_window.t()).float().unsqueeze(0).unsqueeze(0)
     window = _2D_window.expand(channel, 1, window_size, window_size).contiguous()
     return window
 
 
-window_size = 11
+window_size = 3
 gaussian_img_kernel = create_gaussian_window(window_size, 3).float().to(device)
 
 
-def texture_aware_smooth_loss(pred_map, image=None):
-    global grad_img_kernel, lapl_kernel
-
-    if type(pred_map) not in [tuple, list]:
-        pred_map = [pred_map]
+def grad_diffusion_loss(pred_disp, img=None, kappa=0.1):
+    if type(pred_disp) not in [tuple, list]:
+        pred_disp = [pred_disp]
 
     loss = 0
     weight = 1.
-    eps = 0.1
 
-    for scaled_map in pred_map:
-        if image is not None:
-            b, _, h, w = scaled_map.size()
-            scaled_image = F.adaptive_avg_pool2d(image.detach(), (h, w))
-            grad_y = F.conv2d(scaled_image, grad_img_kernel, groups=3)
-            grad_x = F.conv2d(scaled_image, grad_img_kernel.transpose(2,3).contiguous(), groups=3)
-            textureness = (grad_x.abs() + grad_y.abs()).sum(dim=1, keepdim=True) + eps
+    for scaled_disp in pred_disp:
+        b, _, h, w = scaled_disp.shape
+        if img is not None:
+            with torch.no_grad():
+                img_scaled = F.interpolate(img, (h, w), mode='area').norm(p=1, dim=1, keepdim=True)
+                dx_i = img_scaled[:, :, 2:] - img_scaled[:, :, :-2]
+                dy_i = img_scaled[:, :, :, 2:] - img_scaled[:, :, :, :-2]
+                gx = torch.exp(-(dx_i.abs()/kappa)**2)
+                gy = torch.exp(-(dy_i.abs()/kappa)**2)
         else:
-            textureness = 1
+            gx = gy = 1
 
-        disp_lapl = F.conv2d(scaled_map, lapl_kernel.type_as(scaled_map))
-        loss_map = disp_lapl / textureness
-
-        loss += loss_map.abs().mean()*weight / scaled_map.detach().mean()
-        weight /= 4
+        dx2 = scaled_disp[:,:, 2:] - 2 * scaled_disp[:,:,1:-1] + scaled_disp[:,:,:-2]
+        dy2 = scaled_disp[:,:,:, 2:] - 2 * scaled_disp[:,:,:,1:-1] + scaled_disp[:,:,:,:-2]
+        dx2 *= gx
+        dy2 *= gy
+        loss += (dx2.pow(2).mean() + dy2.pow(2).mean()) * weight
+        weight /= 2
     return loss
 
 
@@ -146,8 +134,8 @@ def ssim(img1, img2):
 
 
 @torch.no_grad()
-def compute_depth_errors(gt, pred, crop=True):
-    abs_diff, abs_rel, sq_rel, a1, a2, a3 = 0,0,0,0,0,0
+def compute_depth_errors(gt, pred, max_depth=80, crop=True):
+    abs_diff, abs_rel, abs_log, a1, a2, a3 = 0,0,0,0,0,0
     b, h, w = gt.size()
     if pred.size(1) != h:
         pred_upscaled = F.interpolate(pred, (h, w), mode='bilinear', align_corners=False)[:,0]
@@ -166,12 +154,12 @@ def compute_depth_errors(gt, pred, crop=True):
         crop_mask[y1:y2,x1:x2] = 1
 
     for current_gt, current_pred in zip(gt, pred_upscaled):
-        valid = (current_gt > 0) & (current_gt < 80)
+        valid = (current_gt > 0) & (current_gt < max_depth)
         if crop:
             valid = valid & crop_mask
 
         valid_gt = current_gt[valid]
-        valid_pred = current_pred[valid].clamp(1e-3, 80)
+        valid_pred = current_pred[valid].clamp(1e-3, max_depth)
 
         thresh = torch.max((valid_gt / valid_pred), (valid_pred / valid_gt))
         a1 += (thresh < 1.25).float().mean()
@@ -181,9 +169,9 @@ def compute_depth_errors(gt, pred, crop=True):
         abs_diff += torch.mean(torch.abs(valid_gt - valid_pred))
         abs_rel += torch.mean(torch.abs(valid_gt - valid_pred) / valid_gt)
 
-        sq_rel += torch.mean(((valid_gt - valid_pred)**2) / valid_gt)
+        abs_log += torch.mean(torch.abs(torch.log(valid_gt) - torch.log(valid_pred)))
 
-    return [metric / b for metric in [abs_diff, abs_rel, sq_rel, a1, a2, a3]]
+    return [metric / b for metric in [abs_diff, abs_rel, abs_log, a1, a2, a3]]
 
 
 @torch.no_grad()
@@ -198,12 +186,10 @@ def compute_pose_error(gt, pred):
 
             # Residual matrix to which we compute angle's sin and cos
             R = gt_pose[:,:3] @ pred_pose[:,:3].inverse()
-            s = np.linalg.norm([R[0,1]-R[1,0],
-                                R[1,2]-R[2,1],
-                                R[0,2]-R[2,0]])
-            c = np.trace(R) - 1
+            s = torch.stack([R[0,1]-R[1,0],R[1,2]-R[2,1],R[0,2]-R[2,0]]).norm(p=2)
+            c = R.trace() - 1
 
             # Note: we actually compute double of cos and sin, but arctan2 is invariant to scale
-            RE += np.arctan2(s,c)/seq_length
+            RE += torch.atan2(s,c)/seq_length
 
     return [ATE/batch_size, RE/batch_size]
