@@ -1,13 +1,15 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from .utils import conv,init_modules
 
 
 class PoseNet(nn.Module):
 
-    def __init__(self, seq_length=3, batch_norm=False):
+    def __init__(self, seq_length=3, batch_norm=False, input_size=None):
         super(PoseNet, self).__init__()
         self.seq_length = seq_length
+        self.input_size = input_size
 
         conv_planes = [16, 32, 64, 128, 256, 256, 256]
         self.conv1 = conv(3*self.seq_length, conv_planes[0], kernel_size=7, batch_norm=batch_norm, stride=2)
@@ -24,6 +26,11 @@ class PoseNet(nn.Module):
     def forward(self, img_sequence):
         b, s, c, h, w = img_sequence.size()
         concatenated_imgs = img_sequence.view(b, s*c, h, w)
+
+        if self.input_size:
+            h,w = self.input_size
+            concatenated_imgs = F.interpolate(concatenated_imgs,(h, w), mode='area')
+
         out_conv1 = self.conv1(concatenated_imgs)
         out_conv2 = self.conv2(out_conv1)
         out_conv3 = self.conv3(out_conv2)

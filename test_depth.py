@@ -1,13 +1,10 @@
 import torch
-from torch.autograd import Variable
-
-from scipy.misc import imresize
-from scipy.ndimage.interpolation import zoom
+import torch.nn.functional as F
 import numpy as np
 from path import Path
 import argparse
-import scipy
 from tqdm import tqdm
+import imageio
 
 from models import DepthNet, PoseNet
 from inverse_warp import pose_vec2mat, compensate_pose, invert_mat, inverse_rotate
@@ -24,7 +21,7 @@ parser.add_argument("--no-resize", action='store_true', help="no resizing is don
 parser.add_argument("--min-depth", default=1e-3)
 parser.add_argument("--max-depth", default=80, type=float)
 parser.add_argument("--stabilize-from-GT", action='store_true')
-parser.add_argument("--nominal-displacement", type=float, default=0.6)
+parser.add_argument("--nominal-displacement", type=float, default=0.3)
 parser.add_argument("--output-dir", default='.', type=str, help="Output directory for saving")
 parser.add_argument("--log-best-worst", action='store_true', help="if selected, will log depthNet outputs")
 parser.add_argument("--save-output", action='store_true', help="if selected, will save all predictions in a big 3D numpy file")
@@ -50,22 +47,33 @@ def select_best_map(maps, target_mean):
     return best_map, best_index
 
 
-def log_result(depthmap, GT, input_batch, selected_index, folder, prefix):
-    pred_depth_t = torch.from_numpy(depthmap)
-    to_save = tensor2array(pred_depth_t, max_value=100)
+def log_result(pred_depth, GT, input_batch, selected_index, folder, prefix):
+    def save(path, to_save):
+        to_save = (255*to_save.transpose(1,2,0)).astype(np.uint8)
+        imageio.imsave(path, to_save)
+    pred_to_save = tensor2array(pred_depth, max_value=100)
     gt_to_save = tensor2array(torch.from_numpy(GT), max_value=100)
+
     prefix = folder/prefix
-    scipy.misc.imsave('{}_depth_pred.jpg'.format(prefix), to_save)
-    scipy.misc.imsave('{}_depth_gt.jpg'.format(prefix), gt_to_save)
+    save('{}_depth_pred.jpg'.format(prefix), pred_to_save)
+    save('{}_depth_gt.jpg'.format(prefix), gt_to_save)
+    disp_to_save = tensor2array(1/pred_depth, max_value=None, colormap='magma')
+    gt_disp = np.zeros_like(GT)
+    valid_depth = GT > 0
+    gt_disp[valid_depth] = 1/GT[valid_depth]
+
+    gt_disp_to_save = tensor2array(torch.from_numpy(gt_disp), max_value=None, colormap='magma')
+    save('{}_disp_pred.jpg'.format(prefix), disp_to_save)
+    save('{}_disp_gt.jpg'.format(prefix), gt_disp_to_save)
     to_save = tensor2array(input_batch.cpu().data[selected_index,:3])
-    scipy.misc.imsave('{}_input0.jpg'.format(prefix), to_save)
-    to_save = tensor2array(input_batch.cpu().data[selected_index,3:])
-    scipy.misc.imsave('{}_input1.jpg'.format(prefix), to_save)
+    save('{}_input0.jpg'.format(prefix), to_save)
+    to_save = tensor2array(input_batch.cpu()[selected_index,3:])
+    save('{}_input1.jpg'.format(prefix), to_save)
     for i, batch_elem in enumerate(input_batch.cpu().data):
         to_save = tensor2array(batch_elem[:3])
-        scipy.misc.imsave('{}_batch_{}_0.jpg'.format(prefix, i), to_save)
+        save('{}_batch_{}_0.jpg'.format(prefix, i), to_save)
         to_save = tensor2array(batch_elem[3:])
-        scipy.misc.imsave('{}_batch_{}_1.jpg'.format(prefix, i), to_save)
+        save('{}_batch_{}_1.jpg'.format(prefix, i), to_save)
 
 
 @torch.no_grad()
@@ -79,8 +87,13 @@ def main():
         from stillbox_eval.depth_evaluation_utils import test_framework_stillbox as test_framework
 
     weights = torch.load(args.pretrained_depthnet)
-    depth_net = DepthNet(depth_activation="elu", batch_norm='bn' in weights.keys() and weights['bn']).to(device)
+    depthnet_params = {"depth_activation":"elu",
+                       "batch_norm":"bn" in weights.keys() and weights['bn']}
+    if not args.no_resize:
+        depthnet_params['input_size'] = (args.img_height, args.img_width)
+        depthnet_params['upscale'] = True
 
+    depth_net = DepthNet(**depthnet_params).to(device)
     depth_net.load_state_dict(weights['state_dict'])
     depth_net.eval()
 
@@ -91,7 +104,11 @@ def main():
     else:
         weights = torch.load(args.pretrained_posenet)
         seq_length = int(weights['state_dict']['conv1.0.weight'].size(1)/3)
-        pose_net = PoseNet(seq_length=seq_length).to(device)
+        posenet_params = {'seq_length':seq_length}
+        if not args.no_resize:
+            posenet_params['input_size'] = (args.img_eight, args.img_width)
+
+        pose_net = PoseNet(**posenet_params).to(device)
         pose_net.load_state_dict(weights['state_dict'], strict=False)
 
     dataset_dir = Path(args.dataset_dir)
@@ -104,25 +121,14 @@ def main():
     framework = test_framework(dataset_dir, test_files, seq_length, args.min_depth, args.max_depth)
 
     print('{} files to test'.format(len(test_files)))
-    errors = np.zeros((7, len(test_files)), np.float32)
+    errors = np.zeros((9, len(test_files)), np.float32)
 
     args.output_dir = Path(args.output_dir)
     args.output_dir.makedirs_p()
 
     for j, sample in enumerate(tqdm(framework)):
+        intrinsics = torch.from_numpy(sample['intrinsics']).unsqueeze(0).to(device)
         imgs = sample['imgs']
-        intrinsics = sample['intrinsics'].copy()
-
-        h,w,_ = imgs[0].shape
-        if (not args.no_resize) and (h != args.img_height or w != args.img_width):
-            imgs = [imresize(img, (args.img_height, args.img_width)).astype(np.float32) for img in imgs]
-            intrinsics[0] *= args.img_width/w
-            intrinsics[1] *= args.img_height/h
-
-        intrinsics_inv = np.linalg.inv(intrinsics)
-
-        intrinsics = torch.from_numpy(intrinsics).unsqueeze(0).to(device)
-        intrinsics_inv = torch.from_numpy(intrinsics_inv).unsqueeze(0).to(device)
         imgs = [torch.from_numpy(np.transpose(img, (2,0,1))) for img in imgs]
         imgs = torch.stack(imgs).unsqueeze(0).to(device)
         imgs = 2*(imgs/255 - 0.5)
@@ -131,7 +137,7 @@ def main():
 
         # Construct a batch of all possible stabilized pairs, with PoseNet or with GT orientation, will take the output closest to target mean depth
         if args.stabilize_from_GT:
-            poses_GT = Variable(torch.from_numpy(sample['poses']).cuda()).unsqueeze(0)
+            poses_GT = torch.from_numpy(sample['poses']).unsqueeze(0).to(device)
             inv_poses_GT = invert_mat(poses_GT)
             tgt_pose = inv_poses_GT[:,sample['tgt_index']]
             inv_transform_matrices_tgt = compensate_pose(inv_poses_GT, tgt_pose)
@@ -149,7 +155,7 @@ def main():
                 continue
             img = imgs[:,i]
             img_pose = inv_transform_matrices_tgt[:,i]
-            stab_img = inverse_rotate(img, img_pose[:,:,:3], intrinsics, intrinsics_inv)
+            stab_img = inverse_rotate(img, img_pose[:,:,:3], intrinsics)
             pair = torch.cat([stab_img, tgt_img], dim=1)  # [1, 6, H, W]
             stabilized_pairs.append(pair)
 
@@ -161,7 +167,7 @@ def main():
 
         selected_depth, selected_index = select_best_map(depth_maps, target_mean_depthnet_output)
 
-        pred_depth = selected_depth.cpu().data.numpy() * corresponding_displ[selected_index] / args.nominal_displacement
+        pred_depth = selected_depth * corresponding_displ[selected_index] / args.nominal_displacement
 
         if args.save_output:
             if j == 0:
@@ -169,12 +175,12 @@ def main():
             predictions[j] = 1/pred_depth
 
         gt_depth = sample['gt_depth']
-        pred_depth_zoomed = zoom(pred_depth,
-                                 (gt_depth.shape[0]/pred_depth.shape[0],
-                                  gt_depth.shape[1]/pred_depth.shape[1])
-                                 ).clip(args.min_depth, args.max_depth)
+        pred_depth_zoomed = F.interpolate(pred_depth.view(1,1,*pred_depth.shape),
+                                          gt_depth.shape[:2],
+                                          mode='bilinear',
+                                          align_corners=False).clamp(args.min_depth, args.max_depth)[0,0]
         if sample['mask'] is not None:
-            pred_depth_zoomed_masked = pred_depth_zoomed[sample['mask']]
+            pred_depth_zoomed_masked = pred_depth_zoomed.cpu().numpy()[sample['mask']]
             gt_depth = gt_depth[sample['mask']]
         errors[:,j] = compute_errors(gt_depth, pred_depth_zoomed_masked)
         if args.log_best_worst:
@@ -186,11 +192,11 @@ def main():
                 log_result(pred_depth_zoomed, sample['gt_depth'], stab_batch, selected_index, args.output_dir, 'worst')
 
     mean_errors = errors.mean(1)
-    error_names = ['abs_rel','sq_rel','rms','log_rms','a1','a2','a3']
+    error_names = ['mean_abs', 'abs_rel','abs_log','sq_rel','rms','log_rms','a1','a2','a3']
 
     print("Results : ")
-    print("{:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}".format(*error_names))
-    print("{:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}".format(*mean_errors))
+    print("{:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}, {:>10}".format(*error_names))
+    print("{:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}, {:10.4f}".format(*mean_errors))
 
     if args.save_output:
         np.save(args.output_dir/'predictions.npy', predictions)
@@ -202,17 +208,19 @@ def compute_errors(gt, pred):
     a2 = (thresh < 1.25 ** 2).mean()
     a3 = (thresh < 1.25 ** 3).mean()
 
+    mabs = np.mean(np.abs(gt - pred))
     rmse = (gt - pred) ** 2
     rmse = np.sqrt(rmse.mean())
 
     rmse_log = (np.log(gt) - np.log(pred)) ** 2
     rmse_log = np.sqrt(rmse_log.mean())
+    abs_log = np.mean(np.abs(np.log(gt) - np.log(pred)))
 
     abs_rel = np.mean(np.abs(gt - pred) / gt)
 
     sq_rel = np.mean(((gt - pred)**2) / gt)
 
-    return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
+    return mabs, abs_rel, abs_log, sq_rel, rmse, rmse_log, a1, a2, a3
 
 
 if __name__ == '__main__':

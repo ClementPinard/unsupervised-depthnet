@@ -127,7 +127,6 @@ class ShiftedSequenceFolder(data.Dataset):
             intrinsics = sample['intrinsics']
         preprocessed_sample['imgs'] = imgs
         preprocessed_sample['intrinsics'] = intrinsics
-        preprocessed_sample['intrinsics_inv'] = np.linalg.inv(intrinsics)
         if self.adjust:
             preprocessed_sample['index'] = index
         return preprocessed_sample
