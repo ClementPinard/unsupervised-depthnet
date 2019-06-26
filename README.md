@@ -12,6 +12,17 @@ In [GMDL](https://sites.google.com/site/deepgeometry2018/) Workshop @ [ECCV2018]
 
 See the [project webpage](http://perso.ensta-paristech.fr/~pinard/unsupervised-depthnet/) for more details. 
 
+If you use this repo in your work, please cite us with the following bibtex:
+
+```
+@inproceedings{pinard2018learning,
+  title={Learning structure-from-motion from motion},
+  author={Pinard, Cl{\'e}ment and Chevalley, Laure and Manzanera, Antoine and Filliat, David},
+  booktitle={Proceedings of the European Conference on Computer Vision (ECCV)},
+  year={2018}
+}
+```
+
 ## Preamble
 This codebase was developed and tested with Pytorch 0.4.1, CUDA 9.2 and Ubuntu 16.04.
 
