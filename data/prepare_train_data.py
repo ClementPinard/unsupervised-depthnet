@@ -1,5 +1,5 @@
 import argparse
-import scipy.misc
+from imageio import imsave
 import numpy as np
 from joblib import Parallel, delayed
 from tqdm import tqdm
@@ -43,7 +43,7 @@ def dump_example(args, scene):
         for sample in data_loader.get_scene_imgs(scene_data):
             img, frame_nb = sample["img"], sample["id"]
             dump_img_file = dump_dir/'{}.jpg'.format(frame_nb)
-            scipy.misc.imsave(dump_img_file, img)
+            imsave(dump_img_file, img)
             if "pose" in sample.keys():
                 poses.append(sample["pose"].tolist())
             if "depth" in sample.keys():

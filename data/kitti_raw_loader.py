@@ -1,7 +1,8 @@
 from __future__ import division
 import numpy as np
 from path import Path
-import scipy.misc
+from imageio import imread
+from skimage.transform import resize
 from collections import Counter
 
 
@@ -218,10 +219,10 @@ class KittiRawLoader(object):
         img_file = scene_data['dir']/'image_{}'.format(scene_data['cid'])/'data'/scene_data['frame_id'][tgt_idx]+'.png'
         if not img_file.isfile():
             return None
-        img = scipy.misc.imread(img_file)
+        img = imread(img_file)
         zoom_y = self.img_height/img.shape[0]
         zoom_x = self.img_width/img.shape[1]
-        img = scipy.misc.imresize(img, (self.img_height, self.img_width))
+        img = resize(img, (self.img_height, self.img_width))
         return img, zoom_x, zoom_y
 
     def read_raw_calib_file(self, filepath):
@@ -235,9 +236,9 @@ class KittiRawLoader(object):
                 # The only non-float values in these files are dates, which
                 # we don't care about anyway
                 try:
-                        data[key] = np.array([float(x) for x in value.split()])
+                    data[key] = np.array([float(x) for x in value.split()])
                 except ValueError:
-                        pass
+                    pass
         return data
 
     def generate_depth_map(self, scene_data, tgt_idx):

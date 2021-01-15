@@ -236,12 +236,12 @@ def launch_training(scheduler, **env):
 
     for epoch in range(1, args.epochs + 1):
         env['epoch'] = epoch
-        scheduler.step()
         logger.epoch_bar.update(epoch)
 
         # train for one epoch
         train_loss, env['n_iter'] = train_one_epoch(**env)
         logger.train_writer.write(' * Avg Loss : {:.3f}'.format(train_loss))
+        scheduler.step()
 
         # evaluate on validation set
         error = validate(**env)
@@ -385,6 +385,7 @@ def train_one_epoch(args, train_loader,
             size_ratio = scaled_depth.size(-1) / biggest_scale
 
             if len(same_range) > 0:
+                # Frames are identical. The corresponding depth must be infinite. Here, we set it to max depth
                 still_depth = scaled_depth[same_range]
                 loss_same = F.smooth_l1_loss(still_depth/args.max_depth, torch.ones_like(still_depth))
             else:
