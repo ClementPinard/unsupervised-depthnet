@@ -194,7 +194,7 @@ def inverse_warp(img, depth, pose_matrix, intrinsics, rotation_mode='euler'):
 
     transformed_points = rot @ point_cloud.view(b, 3, -1) + tr
     src_pixel_coords = cam2pixel(transformed_points.view(b, 3, h, w))  # [B,H,W,2]
-    projected_img = F.grid_sample(img, src_pixel_coords, padding_mode='border')
+    projected_img = F.grid_sample(img, src_pixel_coords, padding_mode='border', align_corners=True)
 
     with torch.no_grad():
         valid_points = src_pixel_coords.abs().max(dim=-1)[0] <= 1
@@ -231,6 +231,5 @@ def inverse_rotate(features, rot_matrix, intrinsics, rotation_mode='euler'):
     rot = intrinsics @ rot_matrix @ intrinsics_inv  # [B, 3, 3]
     transformed_points = rot @ cam_coords.view(b, 3, -1)
     src_pixel_coords = cam2pixel(transformed_points.view(b, 3, h, w))  # [B,H,W,2]
-    projected_img = F.grid_sample(features, src_pixel_coords, padding_mode='border')
-
+    projected_img = F.grid_sample(features, src_pixel_coords, padding_mode='border', align_corners=True)
     return projected_img
