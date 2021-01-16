@@ -69,10 +69,17 @@ def main():
         pred_depth *= scale_factor
 
         if (not args.no_resize) and (pred_depth.shape[0] != args.img_height or pred_depth.shape[1] != args.img_width):
-            pred_depth = F.interpolate(pred_depth, size=(args.img_height, args.img_width), align_corners=False)
-        pred_depth = pred_depth.cpu().numpy()[0, 0]
+            out_shape = (args.img_height, args.img_width)
+        else:
+            out_shape = tgt_img.shape[:2]
 
-        engine.finish_frame(pred_depth)
+        pred_depth_zoomed = F.interpolate(pred_depth.view(1, 1, *pred_depth.shape),
+                                          out_shape,
+                                          mode='bilinear',
+                                          align_corners=False)
+        pred_depth_zoomed = pred_depth_zoomed.cpu().numpy()[0, 0]
+
+        engine.finish_frame(pred_depth_zoomed)
     mean_inference_time, output_depth_maps = engine.finalize(output_path=args.depth_output)
 
     print("Mean time per sample : {:.2f}us".format(1e6 * mean_inference_time))
