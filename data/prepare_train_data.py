@@ -43,7 +43,7 @@ def dump_example(args, scene):
         for sample in data_loader.get_scene_imgs(scene_data):
             img, frame_nb = sample["img"], sample["id"]
             dump_img_file = dump_dir/'{}.jpg'.format(frame_nb)
-            imsave(dump_img_file, img)
+            imsave(dump_img_file, (256*img).astype(np.uint8))
             if "pose" in sample.keys():
                 poses.append(sample["pose"].tolist())
             if "depth" in sample.keys():
