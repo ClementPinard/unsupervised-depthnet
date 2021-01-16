@@ -45,21 +45,13 @@ def main():
     depth_net.load_state_dict(weights['state_dict'])
     depth_net.eval()
 
-    if args.pretrained_posenet is not None:
-        weights = torch.load(args.pretrained_posenet)
-        seq_length = int(weights['state_dict']['conv1.0.weight'].size(1)/3)
-        pose_net = PoseNet(nb_ref_imgs=seq_length - 1, output_exp=False).to(device)
-        pose_net.load_state_dict(weights['state_dict'], strict=False)
-
     for sample in tqdm(engine):
         tgt_img, latest_intrinsics, poses = sample.get_frame()
         ref_img, _, previous_pose = sample.get_previous_frame(displacement=args.nominal_displacement)
-
-        previous_pose = torch.from_numpy(previous_pose).to(ref_img)
-        inv_rot = previous_pose[:, :3].T
+        inv_rot = torch.from_numpy(previous_pose).to(ref_img)[:, :3].T
         latest_intrinsics = torch.from_numpy(latest_intrinsics).to(ref_img)
 
-        stab_img = inverse_rotate(ref_img, inv_rot[None], latest_intrinsics)
+        stab_img = inverse_rotate(ref_img, inv_rot[None], latest_intrinsics[None])
         pair = torch.cat([stab_img, tgt_img], dim=1)  # [1, 6, H, W]
 
         pred_depth = depth_net(pair)
